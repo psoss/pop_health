@@ -1,0 +1,194 @@
+---
+title: "hw_2"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+rm(list=ls())
+library(dplyr)
+library(tidyverse)
+library(caret)
+library(ggplot2)
+library(gridExtra)
+```
+
+```{r}
+RMSE = function(m, o){
+  sqrt(mean((m - o)^2))
+}
+```
+
+```{r}
+d.cms <- read.csv(file='/Users/psossenheimer/mystuff/mscbmi/pop_health/Class04_All_DRGs/CMS_IPPS_2011.csv')
+
+```
+
+```{r}
+d.cms <- d.cms %>%
+  filter(DRG_Definition == "377 - G.I. HEMORRHAGE W MCC", 
+         Provider_State == "CA") %>%
+  mutate(Provider_Zip_Code = as.factor(Provider_Zip_Code),
+         Hospital_Referral_Region_Descrip = as.factor(gsub("CA - ", "", as.character(Hospital_Referral_Region_Descrip))))
+
+d.mean <- d.cms %>%
+  group_by(Hospital_Referral_Region_Descrip) %>%
+  summarise(avg_cov = median(Average_Covered_Charges))
+
+for (i in seq_along(d.cms$Hospital_Referral_Region_Descrip)){
+  d.cms$mean[i] <- d.mean$avg_cov[which(d.mean$Hospital_Referral_Region_Descrip == d.cms$Hospital_Referral_Region_Descrip[i])]
+}
+
+d.cms$Hospital_Referral_Region_Descrip <- reorder(d.cms$Hospital_Referral_Region_Descrip,d.cms$mean)
+```
+
+```{r}
+summary(d.cms$Average_Covered_Charges)
+summary(d.cms$Average_Total_Payments)
+summary(d.cms$Average_Medicare_Payments)
+summary(d.cms$Total_Discharges)
+```
+
+```{r}
+m.disch <- train(Average_Covered_Charges ~ Total_Discharges,
+              data = d.cms, 
+              method = "lm")
+
+summary(m.disch)
+```
+
+```{r}
+m.tot <- train(Average_Covered_Charges ~ Average_Total_Payments,
+               data = d.cms,
+               method = "lm")
+
+summary(m.tot)
+m.tot$results$RMSE
+```
+
+```{r}
+m.med <- train(Average_Covered_Charges ~ Average_Medicare_Payments,
+               data = d.cms,
+               method = "lm")
+
+summary(m.med)
+m.med$results$RMSE
+```
+
+```{r}
+m.reg <- train(Average_Covered_Charges ~ Hospital_Referral_Region_Descrip,
+               data = d.cms,
+               method = "lm")
+
+summary(m.reg)
+m.reg$results$RMSE
+```
+
+```{r}
+trainIndex <- createDataPartition(d.cms$Average_Covered_Charges, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+```
+
+```{r}
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+```
+
+```{r, warning=FALSE}
+m.multi_1 <- train(Average_Covered_Charges ~ Average_Medicare_Payments + Average_Total_Payments + Total_Discharges,
+                 data = d.cms[trainIndex,],
+                 method = "lm",
+                 trControl=control)
+
+m.multi_2 <- train(Average_Covered_Charges ~ Average_Medicare_Payments + Average_Total_Payments + Total_Discharges + Hospital_Referral_Region_Descrip,
+                 data = d.cms[trainIndex,],
+                 method = "lm",
+                 trControl=control)
+
+m.multi_3 <- train(Average_Covered_Charges ~ Average_Medicare_Payments + Average_Total_Payments + Total_Discharges*Average_Total_Payments + Total_Discharges + Hospital_Referral_Region_Descrip,
+                 data = d.cms[trainIndex,],
+                 method = "lm",
+                 trControl=control)
+
+results <- resamples(list(m.multi_1, m.multi_2, m.multi_3))
+
+bwplot(results)
+```
+
+```{r}
+pred1 <- predict(m.multi_1, newdata = d.cms[-trainIndex,])
+pred2 <- predict(m.multi_2, newdata = d.cms[-trainIndex,])
+pred3 <- predict(m.multi_3, newdata = d.cms[-trainIndex,])
+```
+
+```{r}
+mp1 <- ggplot(aes(x=pred, y=real),
+              data=data.frame(real = d.cms[-trainIndex,]$Average_Covered_Charges,pred = pred1)) +
+  geom_point() +
+  xlim(0,160000) +
+  ylim(0,160000) +
+  geom_abline(intercept = 0, slope = 1) +
+  theme_bw() +
+  xlab("Predicted Value") +
+  ylab("Actual Value") +
+  annotate("text", x = 80000, y = 150000, label = "Model 1")
+
+mp2 <- ggplot(aes(x=pred, y=real),
+              data=data.frame(real = d.cms[-trainIndex,]$Average_Covered_Charges,pred = pred2)) +
+  geom_point() +
+  xlim(0,160000) +
+  ylim(0,160000) +
+  geom_abline(intercept = 0, slope = 1) +
+  theme_bw() +
+  xlab("Predicted Value") +
+  ylab("Actual Value") +
+  annotate("text", x = 80000, y = 150000, label = "Model 2")
+
+mp3 <- ggplot(aes(x=pred, y=real),
+              data=data.frame(real = d.cms[-trainIndex,]$Average_Covered_Charges,pred = pred3)) +
+  geom_point() +
+  xlim(0,160000) +
+  ylim(0,160000) +
+  geom_abline(intercept = 0, slope = 1) +
+  theme_bw() +
+  xlab("Predicted Value") +
+  ylab("Actual Value") +
+  annotate("text", x = 80000, y = 150000, label = "Model 3")
+
+grid.arrange(mp1, mp2, mp3, ncol=3)
+```
+
+```{r}
+label.df <- data.frame(Hospital_Referral_Region_Descrip = gsub("Hospital_Referral_Region_Descrip","",m.reg$coefnames),
+                       Value = summary(m.reg)$coefficients[2:23,4])
+
+label.df <- label.df %>%
+  filter(Value < 0.05) %>%
+  mutate(Average_Covered_Charges = 159000)
+```
+
+```{r}
+ggplot(aes(x = Average_Covered_Charges, y = Total_Discharges), data = d.cms) + 
+  geom_point()
+
+ggplot(aes(x = Average_Covered_Charges, y = Average_Total_Payments), data = d.cms) + 
+  geom_point()
+
+ggplot(aes(x = Average_Covered_Charges, y = Average_Medicare_Payments), data = d.cms) + 
+  geom_point()
+
+ggplot(aes(x = Hospital_Referral_Region_Descrip, y = Average_Covered_Charges), data = d.cms) + 
+  geom_boxplot() +
+  xlab("Hospital Referral Region") +
+  ylab("Average Covered Charges") +
+  theme_bw() +
+#  theme(axis.text.x=element_blank(),
+#        axis.ticks.x=element_blank()) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  geom_abline(intercept = mean(d.cms$Average_Covered_Charges), slope = 0, colour='#E41A1C') + 
+  geom_text(data = label.df, label = "*",colour='#E41A1C')
+
+```
