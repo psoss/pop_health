@@ -1,13 +1,17 @@
 ---
-title: "hw_2"
+title: "Lab 01 - Linear Regression. Philip Sossenheimer"
 output: html_document
 ---
+
+This is an R markdown for MSCBMI Population Health assignment 2. The data set is the Inpatient Prospective Payment System data, we will be focusing on GI Hemorrhage in California.
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-```{r}
+Clear the environment and load necessary packages.
+
+```{r,warning=FALSE,message=FALSE}
 rm(list=ls())
 library(dplyr)
 library(tidyverse)
@@ -16,41 +20,61 @@ library(ggplot2)
 library(gridExtra)
 ```
 
+Quickly defining a function to calculate the root mean square error for our models. This will be used later.
+
 ```{r}
 RMSE = function(m, o){
   sqrt(mean((m - o)^2))
 }
 ```
-
+ 
+Read in the data set.
+ 
 ```{r}
 d.cms <- read.csv(file='/Users/psossenheimer/mystuff/mscbmi/pop_health/Class04_All_DRGs/CMS_IPPS_2011.csv')
 
 ```
 
+Next we filter the dataset to only include GI hemorrhage in California, convert Hospital Referral Region to a factor and remove the "CA -" since it is unnecessary.
+
 ```{r}
 d.cms <- d.cms %>%
   filter(DRG_Definition == "377 - G.I. HEMORRHAGE W MCC", 
          Provider_State == "CA") %>%
-  mutate(Provider_Zip_Code = as.factor(Provider_Zip_Code),
-         Hospital_Referral_Region_Descrip = as.factor(gsub("CA - ", "", as.character(Hospital_Referral_Region_Descrip))))
+  mutate(Hospital_Referral_Region_Descrip=as.factor(gsub("CA - ","",as.character(Hospital_Referral_Region_Descrip))))
+
+# This section calculates the median covered charges for each hospital referral region
 
 d.mean <- d.cms %>%
   group_by(Hospital_Referral_Region_Descrip) %>%
   summarise(avg_cov = median(Average_Covered_Charges))
 
+# Add the mean back to the original dataset for each row corresponding to a hospital referral region
+
 for (i in seq_along(d.cms$Hospital_Referral_Region_Descrip)){
   d.cms$mean[i] <- d.mean$avg_cov[which(d.mean$Hospital_Referral_Region_Descrip == d.cms$Hospital_Referral_Region_Descrip[i])]
 }
 
+# Now we can reorder the hospital referral region factor by the median population. 
+# The only reason for this is so that the boxplot of covered charges by referral region
+# is also ordered nicely in increasing order of covered charges
+
 d.cms$Hospital_Referral_Region_Descrip <- reorder(d.cms$Hospital_Referral_Region_Descrip,d.cms$mean)
 ```
 
+Our outcome will be Average Covered Charges, and our predictors will be Average Total Payments, Average Medicare Payments, Total Discharges, and Hospital Referral Region Description
+
 ```{r}
+# quickly take a look at the values of our outcome and predictors
+
 summary(d.cms$Average_Covered_Charges)
 summary(d.cms$Average_Total_Payments)
 summary(d.cms$Average_Medicare_Payments)
 summary(d.cms$Total_Discharges)
+summary(d.cms$Hospital_Referral_Region_Descrip)
 ```
+
+Now we will build univariate linear regression models for each predictor
 
 ```{r}
 m.disch <- train(Average_Covered_Charges ~ Total_Discharges,
@@ -58,6 +82,7 @@ m.disch <- train(Average_Covered_Charges ~ Total_Discharges,
               method = "lm")
 
 summary(m.disch)
+m.disch$results$RMSE
 ```
 
 ```{r}
@@ -78,7 +103,7 @@ summary(m.med)
 m.med$results$RMSE
 ```
 
-```{r}
+```{r,warning=FALSE,message=FALSE}
 m.reg <- train(Average_Covered_Charges ~ Hospital_Referral_Region_Descrip,
                data = d.cms,
                method = "lm")
@@ -87,17 +112,74 @@ summary(m.reg)
 m.reg$results$RMSE
 ```
 
+The univariate models that are significant are Hospital Referral Region, Average Total Payments, and Average Medicare Payments. Total discharges was not significant. Based on the root mean square error (RMSE) from each univariate model above, the model using Average Total Payments as the predictor was the best model (it had the lowest RMSE).
+
+It is interesting to look at which Hospital Referral Regions were significant predictors of Average Covered Charges. To visualize this better, below is a boxplot demonstrating the average covered charges for hospitals in various referral regions. The red line is the averaged covered charges across all hospitals in California. Red stars indicate variables that were significant variables (p < 0.05) in the univariate linear regression model for Average Covered Charges by Hospital Referral Region. Looking at this, it is clear that some regions are much better reimbursed than others! If a hospital were looking to open a clinic and maximize revenue, these might be good areas to target.
+
+```{r}
+label.df <- data.frame(Hospital_Referral_Region_Descrip = gsub("Hospital_Referral_Region_Descrip","",m.reg$coefnames),
+                       Value = summary(m.reg)$coefficients[2:23,4])
+
+label.df <- label.df %>%
+  filter(Value < 0.05) %>%
+  mutate(Average_Covered_Charges = 159000)
+```
+
+```{r}
+ggplot(aes(x = Hospital_Referral_Region_Descrip, y = Average_Covered_Charges), data = d.cms) + 
+  geom_boxplot() +
+  xlab("Hospital Referral Region") +
+  ylab("Average Covered Charges") +
+  theme_bw() +
+#  theme(axis.text.x=element_blank(),
+#        axis.ticks.x=element_blank()) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  geom_abline(intercept = mean(d.cms$Average_Covered_Charges), slope = 0, colour='#E41A1C') + 
+  geom_text(data = label.df, label = "*",colour='#E41A1C')
+
+```
+
+We can also look at the relationships between Average Covered Charges and our other predictors
+
+```{r}
+ggplot(aes(x = Average_Covered_Charges, y = Total_Discharges), data = d.cms) + 
+  geom_point() +
+  xlab("Average Covered Charges") +
+  ylab("Total Discharges") +
+  theme_bw()
+
+ggplot(aes(x = Average_Covered_Charges, y = Average_Total_Payments), data = d.cms) + 
+  geom_point() +
+  xlab("Average Covered Charges") +
+  ylab("Average Total Payments") +
+  theme_bw()
+
+ggplot(aes(x = Average_Covered_Charges, y = Average_Medicare_Payments), data = d.cms) + 
+  geom_point() +
+  xlab("Average Covered Charges") +
+  ylab("Average Medicare Payments") +
+  theme_bw()
+```
+
+Its largely what we expect, there does seem to be a linear relationship between Average Covered Charges and Total Payments/Medicare Payments, but not Total Discharges
+
+Now we split the data into a train and test set.
+
 ```{r}
 trainIndex <- createDataPartition(d.cms$Average_Covered_Charges, p = .8, 
                                   list = FALSE, 
                                   times = 1)
 ```
 
+And set a 5-fold cross validation on the training data.
+
 ```{r}
-control <- trainControl(method="repeatedcv", number=10, repeats=3)
+control <- trainControl(method="repeatedcv", number=5)
 ```
 
-```{r, warning=FALSE}
+Here we train three models. One (Model 1) with all the continuous variables (Total Discharges, Average Total Payments, and Average Covered Charges), a second (Model 2) that had these three variables plus Hospital Referral Region (a categorical variable), and a third (Model 3) that had all of these plus an interaction term between Average Total Payments and Total Discharges. We will take a look at the error for each.
+
+```{r,warning=FALSE,message=FALSE}
 m.multi_1 <- train(Average_Covered_Charges ~ Average_Medicare_Payments + Average_Total_Payments + Total_Discharges,
                  data = d.cms[trainIndex,],
                  method = "lm",
@@ -113,16 +195,24 @@ m.multi_3 <- train(Average_Covered_Charges ~ Average_Medicare_Payments + Average
                  method = "lm",
                  trControl=control)
 
+# plot the RMSE, MAE and R-squared for the three models
+
 results <- resamples(list(m.multi_1, m.multi_2, m.multi_3))
 
 bwplot(results)
 ```
 
-```{r}
+When we plot the mean absolute error (MAE), the RMSE, and the R-squared for each model we see that there is no real difference between the models. Furthermore, they are pretty bad at explaining the variance in the data and I would not use them to make predictions.
+
+We now use these models to predict Average Covered Charges on the test data set (20% of the original data). This is what a hospital might do if they were trying to predict their average covered charges based on this data.
+
+```{r,warning=FALSE,message=FALSE}
 pred1 <- predict(m.multi_1, newdata = d.cms[-trainIndex,])
 pred2 <- predict(m.multi_2, newdata = d.cms[-trainIndex,])
 pred3 <- predict(m.multi_3, newdata = d.cms[-trainIndex,])
 ```
+
+We can assess the quality of these models by plotting the predictions of the models against the actual values from the dataset, this is shown below (the diagonal line shows where perfect predictions would fall):
 
 ```{r}
 mp1 <- ggplot(aes(x=pred, y=real),
@@ -161,34 +251,23 @@ mp3 <- ggplot(aes(x=pred, y=real),
 grid.arrange(mp1, mp2, mp3, ncol=3)
 ```
 
-```{r}
-label.df <- data.frame(Hospital_Referral_Region_Descrip = gsub("Hospital_Referral_Region_Descrip","",m.reg$coefnames),
-                       Value = summary(m.reg)$coefficients[2:23,4])
-
-label.df <- label.df %>%
-  filter(Value < 0.05) %>%
-  mutate(Average_Covered_Charges = 159000)
-```
+Clearly our models all perform quite poorly, and I would not recommend using them for any actual business decisions. We can compare the RMSE between the training and testing sets for each model (the below output shows the RMSE of the trained model, and then the RMSE of the test predictions). The RMSE for the test set was slightly lower. 
 
 ```{r}
-ggplot(aes(x = Average_Covered_Charges, y = Total_Discharges), data = d.cms) + 
-  geom_point()
+# Model 1 training RMSE
+m.multi_1$results$RMSE
+# Model 1 testing RMSE
+RMSE(pred1,d.cms[-trainIndex,]$Average_Covered_Charges)
 
-ggplot(aes(x = Average_Covered_Charges, y = Average_Total_Payments), data = d.cms) + 
-  geom_point()
+# Model 2 training RMSE
+m.multi_2$results$RMSE
+# Model 2 testing RMSE
+RMSE(pred2,d.cms[-trainIndex,]$Average_Covered_Charges)
 
-ggplot(aes(x = Average_Covered_Charges, y = Average_Medicare_Payments), data = d.cms) + 
-  geom_point()
-
-ggplot(aes(x = Hospital_Referral_Region_Descrip, y = Average_Covered_Charges), data = d.cms) + 
-  geom_boxplot() +
-  xlab("Hospital Referral Region") +
-  ylab("Average Covered Charges") +
-  theme_bw() +
-#  theme(axis.text.x=element_blank(),
-#        axis.ticks.x=element_blank()) +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-  geom_abline(intercept = mean(d.cms$Average_Covered_Charges), slope = 0, colour='#E41A1C') + 
-  geom_text(data = label.df, label = "*",colour='#E41A1C')
-
+# Model 3 training RMSE
+m.multi_3$results$RMSE
+# Model 3 testing RMSE
+RMSE(pred3,d.cms[-trainIndex,]$Average_Covered_Charges)
 ```
+
+In either case, the models are very bad at predicting average covered charges and shouldn't be used.
