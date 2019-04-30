@@ -19,6 +19,7 @@ library(caret)
 library(ggplot2)
 library(pROC)
 library(reshape2)
+library(gridExtra)
 
 set.seed(0)
 ```
@@ -123,6 +124,79 @@ d.hf <- d.hf %>%
             div)) %>%
   droplevels()
 ```
+
+Before we dive in, lets look more closely at some of the interesting relationships within the dataset. Specifically, lets remind ourselves why we really care about preventative health by re-examining how horrible smoking is for us.
+
+```{r}
+s1 <- ggplot(aes(x = var_CSMOKING, y = var_COPD), data = d.hf) +
+  geom_point() +
+  theme_bw() +
+  ylab("COPD") +
+  xlab("Smoking Prevalence") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank())
+
+s2 <- ggplot(aes(x = var_CSMOKING, y = var_CHD), data = d.hf) +
+  geom_point() +
+  theme_bw() +
+  ylab("CHF") +
+  xlab("Smoking Prevalence") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank())
+
+s3 <- ggplot(aes(x = var_CSMOKING, y = var_ARTHRITIS), data = d.hf) +
+  geom_point() +
+  theme_bw() +
+  ylab("Arthritis") +
+  xlab("Smoking Prevalence") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank())
+
+s4 <- ggplot(aes(x = var_CSMOKING, y = var_BPHIGH), data = d.hf) +
+  geom_point() +
+  theme_bw() +
+  ylab("Hypertension") +
+  xlab("Smoking Prevalence") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank())
+
+s5 <- ggplot(aes(x = var_CSMOKING, y = var_CASTHMA), data = d.hf) +
+  geom_point() +
+  theme_bw() +
+  ylab("Asthma") +
+  xlab("Smoking Prevalence") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank())
+
+s6 <- ggplot(aes(x = var_CSMOKING, y = var_DIABETES), data = d.hf) +
+  geom_point() +
+  theme_bw() +
+  ylab("Diabetes") +
+  xlab("Smoking Prevalence") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank())
+
+s7 <- ggplot(aes(x = var_CSMOKING, y = var_PHLTH), data = d.hf) +
+  geom_point() +
+  theme_bw() +
+  xlab("Smoking Prevalence") +
+  ylab("Poor Health")
+
+s8 <- ggplot(aes(x = var_CSMOKING, y = var_KIDNEY), data = d.hf) +
+  geom_point() +
+  theme_bw() +
+  xlab("Smoking Prevalence") +
+  ylab("Kidney Disease")
+
+s9 <- ggplot(aes(x = var_CSMOKING, y = var_STROKE), data = d.hf) +
+  geom_point() +
+  theme_bw() +
+  xlab("Smoking Prevalence") +
+  ylab("Stroke")
+
+grid.arrange(s1,s2,s3,s4,s5,s6,s7,s8,s9,ncol=3,nrow=3)
+```
+
 
 In order to efficiently analyze all possible univariate outcome ~ variable models in this data set (of which there are >40), we will use this function to model each outcome ~ variable pair and save the results in a dataframe
 
