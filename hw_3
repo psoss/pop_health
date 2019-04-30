@@ -1,0 +1,323 @@
+---
+title: "Lab 02 - Logistic Regression. Philip Sossenheimer"
+output: html_document
+---
+This is an R markdown for MSCBMI Population Health assignment 3. The data set is the a set of community health indicators, we will be focusing on heart failure as an outcome.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(width = 200)
+```
+
+Clear the environment and load necessary packages.
+
+```{r,warning=FALSE,message=FALSE}
+rm(list = ls())
+library(dplyr)
+library(tidyverse)
+library(caret)
+library(ggplot2)
+library(pROC)
+library(reshape2)
+
+set.seed(0)
+```
+
+Read in the data sets.
+
+```{r}
+d.hf <- read.csv("Logistic_Regression/CLASSIFIED_CITIES_HF.csv")
+d.meas <- read.csv("Logistic_Regression/MEASURES.csv")
+
+# the state dataset will help us select our region of interest
+d.state <- data.frame(state.x77)
+```
+
+Now we will select our region based on the "divisions" defined in the base R "state" data set. There are four regions, Northeast, South, North Central, and West.
+
+```{r}
+d.state$abb <- state.abb
+d.state$div <- state.region
+
+d.hf <- merge(d.hf, d.state, by.x = "Provider_State", by.y = "abb")
+```
+
+Lets look at each variable by region to see if there are any obvious differences in community health measures by region. First I will group each graph by measure category to limit the number of boxplots on the screen at once.
+
+```{r}
+d.pr <- d.hf %>%
+  select(paste("var_",as.character(d.meas$MeasureId[d.meas$Category == "Prevention"]),sep=""),div)
+
+d.pr <- melt(d.pr, id.vars = "div")
+
+d.ho <- d.hf %>%
+  select(paste("var_",as.character(d.meas$MeasureId[d.meas$Category == "Health Outcomes"]),sep=""),div)
+
+d.ho <- melt(d.ho, id.vars = "div")
+
+d.ub <- d.hf %>%
+  select(paste("var_",as.character(d.meas$MeasureId[d.meas$Category == "Unhealthy Behaviors"]),sep=""),div)
+
+d.ub <- melt(d.ub, id.vars = "div")
+```
+
+Now we can plot each measure by region!
+
+```{r}
+ggplot(aes(x = variable, y = value, fill = div), data = d.pr) +
+  geom_boxplot() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  xlab("Prevention") +
+  ylab("Percent of population")
+
+ggplot(aes(x = variable, y = value, fill = div), data = d.ho) +
+  geom_boxplot() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  xlab("Health Outcomes") +
+  ylab("Percent of population")
+
+ggplot(aes(x = variable, y = value, fill = div), data = d.ub) +
+  geom_boxplot() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  xlab("Unhealthy Behaviors") +
+  ylab("Percent of population")
+```
+
+The regions largely seem similar. The west overall seems to do best on most metrics, in particular the unhealthy behaviors. Thats probably because we have such beautiful oceans and mountains to enjoy! ;) (full disclsoure, Im from Utah).
+
+I dont want to necessarily do this assignment on the part of the country that is already performing well on community health measures, so I probably wont focus on the west.
+
+To further help us pick which region of the country to use, lets visualize the distribution of charges (high, medium, or low) in each region.
+
+```{r}
+ggplot(aes(x = div, y = class_var_hf), data = d.hf) +
+  geom_jitter() +
+  theme_bw() +
+  ylab("Average Covered Charge Category") +
+  xlab("Region")
+```
+
+Since the south only has two outcomes, medium and low, it lends itself well to simple logistic regression. It also has a good distribution between the two groups and has sufficient data points. We will choose that region. Plus I know nothing about the South so maybe I can learn something...
+
+```{r}
+d.hf <- d.hf %>%
+  filter(div == "South") %>%
+  rename(outcome = class_var_hf) %>%
+  mutate(Provider_Zip_Code = as.factor(Provider_Zip_Code),
+         # create a new variable, lowvolume = 1 if a center 
+         # is in the bottom 25% of total discharges,
+         # this will be used later
+         lowvolume = as.factor(ifelse(Total_Discharges < quantile(Total_Discharges)[2],1,0)),
+         outcome = relevel(outcome, ref = "Low")
+         ) %>%
+  # filter out the data we dont need
+  select(-c(DRG_Definition,
+            Average_Covered_Charges,
+            Average_Total_Payments,
+            Average_Medicare_Payments,
+            P_Average_Covered_Charges,
+            residual,
+            div)) %>%
+  droplevels()
+```
+
+In order to efficiently analyze all possible univariate outcome ~ variable models in this data set (of which there are >40), we will use this function to model each outcome ~ variable pair and save the results in a dataframe
+
+```{r}
+all_glm <- function(data_in) { 
+  # initialize an empty dataframe to save results in 
+  d <- data.frame(
+    index = integer(),
+    coef = integer(),
+    p_value = integer(),
+    loglik = integer(),
+    AIC = integer()
+  )
+  # initialize i = 1, which will help index our results
+  i = 1
+  # initialize an empty vector for names of variables
+  name = c()
+  # iterate through every variable in the dataframe
+  for (var in names(data_in)) {
+    # we are using ordered logistic regression here, since our outcome
+    # has three, ordered possible values (low, med, high)
+    m <- glm(data_in$outcome ~ data_in[[var]], family = "binomial")
+    # save the variable in the names vector
+    name <- c(name,var)
+    # create a vector with the fit results of the model 
+    line <- c(i,
+              # we cant calculate the p-value and coefficient for a factor with more
+              # than 2 levels for the purposes of this table, so the if-else statements
+              # check for that
+              ifelse(class(data_in[[var]]) == "factor",
+                     ifelse(length(levels(data_in[[var]])) > 2,
+                            NA,
+                            coef(m)[2]),
+                     coef(m)[2]),
+              ifelse(class(data_in[[var]]) == "factor",
+                     ifelse(length(levels(data_in[[var]])) > 2,
+                            NA,
+                            coef(summary(m))[,4][2]),
+                     coef(summary(m))[,4][2]),
+              logLik(m)[1],
+              AIC(m)
+              )
+    # add the fit results to the results database
+    d <- rbind(d,line)
+    # increment our index
+    i = i + 1
+  }
+  # rename the dataframe variables
+  names(d) <- c("index","coef","p_value","log_likelihood","AIC")
+  # add a new column with the name of the variable
+  d$variable <- name
+  return(d)
+}
+```
+
+Lets run the models and see which single variable model is best! I do recognize that this shotgun approach is poor form and could be considered p-hacking, but we are using it only as a means of initial feature selection and not as our final result.
+
+```{r,warning=FALSE,message=FALSE,results="hide"}
+glm_tbl <- all_glm(d.hf)
+```
+
+Lets sort the data by decreasing log likelihood and take a look!
+
+```{r}
+# Note that the coef and p-value for factors with more than one level are not shown here! The AIC and logLik can still be interpreted, and if we are interested we could later check what the p-value and specific coefficients were
+
+glm_tbl[order(glm_tbl$log_likelihood, decreasing = TRUE),]
+```
+
+We can now view the results of the single variable models. The models that had the best log likelihood and AIC were those that took into account state, city, and referral region. This is not surprising, since medicare negotiates payments differently with different states. We can't really interpret these though, since many of these categorical variables have very few observations per category (for example Provider Name has almost exclusively unique values). Note again that we dont show the p-value or coefficient for the categorical variables in this table. Among the variables that are not regional, outcome ~ cancer was the most significant predictor, followed by outcome ~ access to care. 
+
+As we build a multivariate model using what we learned from our single variable analysis, we first split the data into a train and test set.
+
+```{r}
+trainIndex <- createDataPartition(d.hf$outcome, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+```
+
+And set a 5-fold cross validation on the training data.
+
+```{r}
+control <- trainControl(method = "repeatedcv",
+                        number = 5,
+                        savePredictions = TRUE,
+                        ## Estimate class probabilities
+                        classProbs = TRUE,
+                        ## Evaluate performance using 
+                        ## the following function
+                        summaryFunction = twoClassSummary)
+```
+
+I am particularly interested in preventative health metrics and their impact on health outcomes, so our multivariate analysis will focus on that.
+
+We will train three models. Our first model (Model 1) will have all the continuous variables that were significant at the univariate level and are considered "preventative" measures, since that is where my interest is.
+
+This code selects all the variables that were significant at the univariate level and are classified as "preventative measures" in the MEASURES.csv file.
+
+```{r}
+sig_var <- glm_tbl %>%
+  filter(p_value < 0.05) %>%
+  select(variable) %>%
+  unlist()
+
+sig_prev <- as.character(d.meas$MeasureId[(d.meas$MeasureId %in% gsub("var_","",sig_var)) 
+                                          & d.meas$Category == "Prevention"])
+sig_prev <- paste("var_",sig_prev,sep="")
+
+sig_prev <- c(sig_prev,'outcome')
+
+d.m1 <- d.hf %>%
+  select(sig_prev)
+
+colnames(d.m1) <- sig_prev
+```
+
+Now we can train the model
+
+```{r,warning=FALSE,message=FALSE}
+m.multi_1 <- train(outcome ~ .,
+                 data = d.m1[trainIndex,],
+                 method = "glm",
+                 family = "binomial",
+                 trControl=control)
+```
+
+Our second model (Model 2) will also include these variables, but will further correct for low volume centers (a categorical variable, lowvolume = 1 if center is in the bottom 25% of total discharges). Low volume center was significant in the univariate model (we can see that in our glm_tbl)
+
+```{r}
+d.m2 <- d.hf %>%
+  select(sig_prev,lowvolume)
+```
+
+Now we can train the model
+
+```{r,warning=FALSE,message=FALSE}
+m.multi_2 <- train(outcome ~ .,
+                 data = d.m2[trainIndex,],
+                 method = "glm",
+                 family = "binomial",
+                 trControl=control)
+```
+
+Finally, we will train a third model (Model 3) that has all of these plus an interaction term between var-ACCESS2 and total discharges. This is because the effect size of var-ACCESS2 might change by discharges, and vice versa. One can imagine that there might be more access to care near a high volume center.
+
+```{r}
+d.hf <- d.hf %>%
+  mutate(interaction = Total_Discharges*var_ACCESS2)
+
+d.m3 <- d.hf %>%
+  select(sig_prev,interaction)
+```
+
+Now we can train the model
+
+```{r,warning=FALSE,message=FALSE}
+m.multi_3 <- train(outcome ~ .,
+                 data = d.m3[trainIndex,],
+                 method = "glm",
+                 family = "binomial",
+                 trControl=control)
+```
+
+Lets see generally how our models performed in cross-validation
+
+```{r}
+m.multi_1
+m.multi_2
+m.multi_3
+```
+
+The third model had the highest ROC, barely. None of them performed particularly well.
+
+Now lets do predictions on the test data set
+
+```{r}
+pred1 <- predict(m.multi_1, newdata = d.hf[-trainIndex,],type="prob")
+pred2 <- predict(m.multi_2, newdata = d.hf[-trainIndex,],type="prob")
+pred3 <- predict(m.multi_3, newdata = d.hf[-trainIndex,],type="prob")
+```
+
+And see how well our models performed based on the ROC (plotting Sensitivity vs 1-Specificty)
+
+```{r}
+r1 <- roc(d.hf$outcome[-trainIndex],pred1$Low)
+r2 <- roc(d.hf$outcome[-trainIndex],pred2$Low)
+r3 <- roc(d.hf$outcome[-trainIndex],pred3$Low)
+  
+plot(r1)
+r1
+plot(r2)
+r2
+plot(r3)
+r3
+```
+
+Not TOO shabby! The second model, which included a binary variable based that adjusted for low volume centers performed the best with an AUC of 0.663. For real world data, this is pretty good.
+
